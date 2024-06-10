@@ -1,0 +1,1 @@
+Simple [gobgp](https://github.com/osrg/gobgp)-based speaker for anycast with 2 uplinks.
