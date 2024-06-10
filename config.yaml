@@ -1,0 +1,10 @@
+---
+anycast_ip: "10.100.10.100"
+asn: 65300
+neighbors:
+- address: "192.168.84.100"
+  local_address: "192.168.84.1"
+  asn: 4266459237
+- address: "192.168.161.100"
+  local_address: "192.168.161.1"
+  asn: 4266459238
