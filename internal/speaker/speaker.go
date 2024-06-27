@@ -34,6 +34,18 @@ type Speaker struct {
 	s          *server.BgpServer
 }
 
+func NewAppCfg(configPath string, logLevel LogLevel) (*Speaker, error) {
+	sp := &Speaker{
+		confitPath: configPath,
+		logLevel:   logLevel,
+	}
+	sp.logger = NewLogger(sp.logLevel.LrLevel())
+	if err := sp.loadConfig(); err != nil {
+		return nil, err
+	}
+	return sp, nil
+}
+
 func NewApp() (*Speaker, error) {
 	sp := &Speaker{}
 	sp.parseArgs()
