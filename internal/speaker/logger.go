@@ -10,13 +10,13 @@ type Logger struct {
 	logger *logrus.Logger
 }
 
-func NewLogger() *Logger {
+func NewLogger(l logrus.Level) *Logger {
 	logger := logrus.New()
 	logger.SetFormatter(&logrus.TextFormatter{
 		DisableColors: false,
 		FullTimestamp: true,
 	})
-	logger.SetLevel(logrus.DebugLevel)
+	logger.SetLevel(l)
 	return &Logger{
 		logger: logger,
 	}

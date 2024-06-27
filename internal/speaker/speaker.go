@@ -11,6 +11,7 @@ import (
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
 	"github.com/osrg/gobgp/v3/pkg/server"
 	flag "github.com/spf13/pflag"
+	"golang.org/x/exp/maps"
 	"google.golang.org/protobuf/types/known/anypb"
 	"gopkg.in/yaml.v3"
 )
@@ -27,23 +28,25 @@ const (
 type Speaker struct {
 	ctx        context.Context
 	confitPath string
+	logLevel   LogLevel
 	logger     *Logger
 	config     Config
 	s          *server.BgpServer
 }
 
 func NewApp() (*Speaker, error) {
-	sp := &Speaker{logger: NewLogger()}
+	sp := &Speaker{}
 	sp.parseArgs()
+	sp.logger = NewLogger(sp.logLevel.LrLevel())
 	if err := sp.loadConfig(); err != nil {
 		return nil, err
 	}
-
 	return sp, nil
 }
 
 func (sp *Speaker) parseArgs() {
 	flag.StringVar(&sp.confitPath, "config", "config.yaml", "Configuration path")
+	flag.Var(&sp.logLevel, "log-level", fmt.Sprintf("logging level, one of %v", maps.Keys(sp.logLevel.Levels())))
 	flag.Parse()
 }
 

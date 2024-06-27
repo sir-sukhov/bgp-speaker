@@ -36,6 +36,7 @@ require (
 
 require (
 	github.com/osrg/gobgp/v3 v3.27.0
+	golang.org/x/exp v0.0.0-20240604190554-fc45aab8b7f8
 	golang.org/x/sys v0.18.0 // indirect
 	google.golang.org/protobuf v1.34.1
 )
