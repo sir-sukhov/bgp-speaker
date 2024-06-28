@@ -10,8 +10,6 @@ import (
 	api "github.com/osrg/gobgp/v3/api"
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
 	"github.com/osrg/gobgp/v3/pkg/server"
-	flag "github.com/spf13/pflag"
-	"golang.org/x/exp/maps"
 	"google.golang.org/protobuf/types/known/anypb"
 	"gopkg.in/yaml.v3"
 )
@@ -44,22 +42,6 @@ func NewAppCfg(configPath string, logLevel LogLevel) (*Speaker, error) {
 		return nil, err
 	}
 	return sp, nil
-}
-
-func NewApp() (*Speaker, error) {
-	sp := &Speaker{}
-	sp.parseArgs()
-	sp.logger = NewLogger(sp.logLevel.LrLevel())
-	if err := sp.loadConfig(); err != nil {
-		return nil, err
-	}
-	return sp, nil
-}
-
-func (sp *Speaker) parseArgs() {
-	flag.StringVar(&sp.confitPath, "config", "config.yaml", "Configuration path")
-	flag.Var(&sp.logLevel, "log-level", fmt.Sprintf("logging level, one of %v", maps.Keys(sp.logLevel.Levels())))
-	flag.Parse()
 }
 
 func (sp *Speaker) loadConfig() error {
