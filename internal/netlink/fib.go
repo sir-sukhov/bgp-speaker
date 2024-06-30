@@ -1,13 +1,22 @@
 package netlink
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"strings"
 
 	"github.com/jsimonetti/rtnetlink"
 	"github.com/jsimonetti/rtnetlink/rtnl"
+)
+
+const (
+	familyAfInet     = 2
+	rtTableMain      = 254
+	protoBgp         = 186
+	typeUnicast      = 1
+	scopeGlobal      = 0
+	noInterfaceIndex = 0
+	routePriority    = 50
 )
 
 // PrintRoutes печатает все маршруты, полученные с помощью [rtnl].
@@ -33,9 +42,10 @@ func PrintRoutes() error {
 	}
 	for i, rt := range messages {
 		ifindex := int(rt.Attributes.OutIface)
-		iface, ok := linksMap[ifindex]
+		ifName, ok := linksMap[ifindex]
 		if !ok {
-			return fmt.Errorf("failed to get name of interface with index %d: might be multipath: %s", ifindex, errors.ErrUnsupported)
+			tryPrintMultipathRoute(i, linksMap, rt)
+			continue
 		}
 		var dst string
 		if rt.Attributes.Dst == nil {
@@ -49,9 +59,31 @@ func PrintRoutes() error {
 		} else {
 			gateway = fmt.Sprintf("via %s ", rt.Attributes.Gateway.String())
 		}
-		fmt.Printf("%02d. %s %sdev %s table id %d\n", i, dst, gateway, iface, rt.Table)
+		fmt.Printf("%02d. %s %sdev %s table id %d\n", i, dst, gateway, ifName, rt.Table)
 	}
 	return nil
+}
+
+func tryPrintMultipathRoute(i int, linksMap map[int]string, rt rtnetlink.RouteMessage) {
+	sb := strings.Builder{}
+	sb.WriteString(fmt.Sprintf("%02d. ", i))
+	if rt.Attributes.Dst == nil {
+		sb.WriteString("default ")
+	} else {
+		sb.WriteString(fmt.Sprintf("%s/%d ", rt.Attributes.Dst.String(), rt.DstLength))
+	}
+	sb.WriteString(fmt.Sprintf("proto id %d table id %d priority %d\n", rt.Protocol, rt.Table, rt.Attributes.Priority))
+	for i, path := range rt.Attributes.Multipath {
+		nextHop := path.Gateway.String()
+		ifName, ok := linksMap[int(path.Hop.IfIndex)]
+		if !ok {
+			sb.WriteString(fmt.Sprintf("\tERROR: failed to determine ifName for nextHop %s\n", nextHop))
+			fmt.Print(sb.String())
+			return
+		}
+		sb.WriteString(fmt.Sprintf("\tpath %d: via %s dev %s\n", i, nextHop, ifName))
+	}
+	fmt.Print(sb.String())
 }
 
 // SetDefaultRoute добавляет или заменяет маршрут по-умолчанию.
@@ -75,7 +107,7 @@ func SetDefaultRoute(gateway string) error {
 	}
 	_, ipNet, _ := net.ParseCIDR("0.0.0.0/0")
 	withRoutePriority := func(opts *rtnl.RouteOptions) {
-		opts.Attrs.Priority = 50
+		opts.Attrs.Priority = routePriority
 	}
 	if err := c.RouteReplace(routeToGw.Interface, *ipNet, gw, withRoutePriority); err != nil {
 		return err
@@ -92,37 +124,36 @@ func setMultipathDefaultRoute(gateways []net.IP) error {
 		return err
 	}
 	defer c.Close()
-	withRoutePriority := func(opts *rtnl.RouteOptions) {
-		opts.Attrs.Priority = 50
-	}
-	gwInterfaceIndexes := make([]int, len(gateways))
-	for i, gw := range gateways {
+	nextHops := make([]rtnetlink.NextHop, 0, len(gateways))
+	for _, gw := range gateways {
 		routeToGw, err := c.RouteGet(gw)
 		if err != nil {
 			return fmt.Errorf("route lookup to %s failed: %w", gw, err)
 		}
-		gwInterfaceIndexes[i] = routeToGw.Interface.Index
-	}
-	withMultipathRoute := func(opts *rtnl.RouteOptions) {
-		nextHops := make([]rtnetlink.NextHop, 0, len(gateways))
-		for i, gw := range gateways {
-			nextHops = append(nextHops, rtnetlink.NextHop{
-				Hop: rtnetlink.RTNextHop{
-					Length:  16,
-					IfIndex: uint32(gwInterfaceIndexes[i]),
-				},
-				Gateway: gw,
-			})
-		}
-		opts.Attrs.Multipath = nextHops
-	}
-	noInterface := &net.Interface{
-		Index: 0,
+		nextHops = append(nextHops, rtnetlink.NextHop{
+			Hop: rtnetlink.RTNextHop{
+				Length:  16,
+				IfIndex: uint32(routeToGw.Interface.Index),
+			},
+			Gateway: gw,
+		})
 	}
 	_, allNets, _ := net.ParseCIDR("0.0.0.0/0")
-	noDst := net.IPv4(0, 0, 0, 0)
-	if err := c.RouteReplace(noInterface, *allNets, noDst, withRoutePriority, withMultipathRoute); err != nil {
-		return err
+	dstlen, _ := allNets.Mask.Size()
+	routeMessage := &rtnetlink.RouteMessage{
+		Family:    familyAfInet,
+		Table:     rtTableMain,
+		Protocol:  protoBgp,
+		Type:      typeUnicast,
+		Scope:     scopeGlobal,
+		DstLength: uint8(dstlen),
+		SrcLength: uint8(0),
+		Attributes: rtnetlink.RouteAttributes{
+			Dst:       allNets.IP,
+			OutIface:  uint32(noInterfaceIndex),
+			Priority:  routePriority,
+			Multipath: nextHops,
+		},
 	}
-	return nil
+	return c.Conn.Route.Replace(routeMessage)
 }

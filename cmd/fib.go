@@ -22,7 +22,7 @@ var (
 	}
 	gateway            string
 	setDefaultRouteCmd = &cobra.Command{
-		Use:   "set-default-route gateway",
+		Use:   "set-default-route",
 		Short: "Update default route to gateway",
 		Long:  `This command is like 'ip route del + ip route add'`,
 		Run: func(cmd *cobra.Command, args []string) {
