@@ -94,25 +94,37 @@ func SetDefaultRoute(gateway string) error {
 			gwIps = append(gwIps, net.ParseIP(gwString))
 		}
 		return setMultipathDefaultRoute(gwIps)
+	} else {
+		gwIp := net.ParseIP(gateway)
+		return setSinglepathDefaultRoute(gwIp)
 	}
+}
+
+// Функция setSinglepathDefaultRoute добавляет default route.
+func setSinglepathDefaultRoute(gateway net.IP) error {
 	c, err := rtnl.Dial(nil)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
-	gw := net.ParseIP(gateway)
-	routeToGw, err := c.RouteGet(gw)
-	if err != nil {
-		return fmt.Errorf("route lookup to %s failed: %w", gateway, err)
+	_, allNets, _ := net.ParseCIDR("0.0.0.0/0")
+	dstlen, _ := allNets.Mask.Size()
+	routeMessage := &rtnetlink.RouteMessage{
+		Family:    familyAfInet,
+		Table:     rtTableMain,
+		Protocol:  protoBgp,
+		Type:      typeUnicast,
+		Scope:     scopeGlobal,
+		DstLength: uint8(dstlen),
+		SrcLength: uint8(0),
+		Attributes: rtnetlink.RouteAttributes{
+			Dst:      allNets.IP,
+			OutIface: uint32(noInterfaceIndex),
+			Gateway:  gateway,
+			Priority: routePriority,
+		},
 	}
-	_, ipNet, _ := net.ParseCIDR("0.0.0.0/0")
-	withRoutePriority := func(opts *rtnl.RouteOptions) {
-		opts.Attrs.Priority = routePriority
-	}
-	if err := c.RouteReplace(routeToGw.Interface, *ipNet, gw, withRoutePriority); err != nil {
-		return err
-	}
-	return nil
+	return c.Conn.Route.Replace(routeMessage)
 }
 
 // Функция setMultipathDefaultRoute добавляет т.н. [multipath route].
