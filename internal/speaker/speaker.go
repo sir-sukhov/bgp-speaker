@@ -72,14 +72,14 @@ func (sp *Speaker) Run() error {
 	if err := sp.startBgp(); err != nil {
 		return fmt.Errorf("error starting bgp: %w", err)
 	}
+	if err := sp.setupPolicies(); err != nil {
+		return fmt.Errorf("error creating policies: %w", err)
+	}
 	if err := sp.addNeighbors(); err != nil {
 		return fmt.Errorf("error adding neighbors: %w", err)
 	}
 	if err := sp.addPath(); err != nil {
 		return fmt.Errorf("error advertising anycast route: %w", err)
-	}
-	if err := sp.setupPolicies(); err != nil {
-		return fmt.Errorf("error creating policies: %w", err)
 	}
 
 	<-ctx.Done()
@@ -177,10 +177,14 @@ func (sp *Speaker) setupPolicies() error {
 	if err := sp.addPolicy(policyAnycastIP); err != nil {
 		return err
 	}
+	policyImportAnycastIP := sp.createAnycastIPPolicyImport()
+	if err := sp.addPolicy(policyImportAnycastIP); err != nil {
+		return err
+	}
 	if err := sp.addPolicyAssignment(&api.PolicyAssignment{
 		Name:          global,
 		Direction:     api.PolicyDirection_IMPORT,
-		Policies:      []*api.Policy{policyDefaultRoute},
+		Policies:      []*api.Policy{policyDefaultRoute, policyImportAnycastIP},
 		DefaultAction: api.RouteAction_REJECT,
 	}); err != nil {
 		return err
@@ -289,6 +293,28 @@ func (sp *Speaker) createAnycastIPPolicy() *api.Policy {
 						Type: api.MatchSet_ANY,
 						Name: uplinks,
 					},
+				},
+				Actions: &api.Actions{
+					RouteAction: api.RouteAction_ACCEPT,
+				},
+			},
+		},
+	}
+}
+
+// Метод createAnycastIPPolicy создает политику, разрешающую добавлять в rib anycast ip.
+func (sp *Speaker) createAnycastIPPolicyImport() *api.Policy {
+	return &api.Policy{
+		Name: onlyAnycastIP,
+		Statements: []*api.Statement{
+			{
+				Name: "allow-anycast-ip-igp",
+				Conditions: &api.Conditions{
+					PrefixSet: &api.MatchSet{
+						Type: api.MatchSet_ANY,
+						Name: anycastIP,
+					},
+					RouteType: api.Conditions_ROUTE_TYPE_LOCAL,
 				},
 				Actions: &api.Actions{
 					RouteAction: api.RouteAction_ACCEPT,
