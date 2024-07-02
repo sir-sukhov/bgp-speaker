@@ -7,16 +7,17 @@ import (
 
 	"github.com/jsimonetti/rtnetlink"
 	"github.com/jsimonetti/rtnetlink/rtnl"
+	"github.com/mdlayher/netlink"
 )
 
 const (
-	familyAfInet     = 2
-	rtTableMain      = 254
-	protoBgp         = 186
-	typeUnicast      = 1
-	scopeGlobal      = 0
-	noInterfaceIndex = 0
-	routePriority    = 50
+	familyAfInet  = 2
+	rtTableMain   = 254
+	protoBgp      = 186
+	typeUnicast   = 1
+	routePriority = 50
+	newRoute      = 0x18
+	deleteRoute   = 0x19
 )
 
 // PrintRoutes печатает все маршруты, полученные с помощью [rtnl].
@@ -107,19 +108,12 @@ func setSinglepathDefaultRoute(gateway net.IP) error {
 		return err
 	}
 	defer c.Close()
-	_, allNets, _ := net.ParseCIDR("0.0.0.0/0")
-	dstlen, _ := allNets.Mask.Size()
 	routeMessage := &rtnetlink.RouteMessage{
-		Family:    familyAfInet,
-		Table:     rtTableMain,
-		Protocol:  protoBgp,
-		Type:      typeUnicast,
-		Scope:     scopeGlobal,
-		DstLength: uint8(dstlen),
-		SrcLength: uint8(0),
+		Family:   familyAfInet,
+		Table:    rtTableMain,
+		Protocol: protoBgp,
+		Type:     typeUnicast,
 		Attributes: rtnetlink.RouteAttributes{
-			Dst:      allNets.IP,
-			OutIface: uint32(noInterfaceIndex),
 			Gateway:  gateway,
 			Priority: routePriority,
 		},
@@ -131,41 +125,49 @@ func setSinglepathDefaultRoute(gateway net.IP) error {
 //
 // [multipath route]: https://codecave.cc/multipath-routing-in-linux-part-1.html
 func setMultipathDefaultRoute(gateways []net.IP) error {
-	c, err := rtnl.Dial(nil)
+	c, err := rtnetlink.Dial(nil)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
 	nextHops := make([]rtnetlink.NextHop, 0, len(gateways))
 	for _, gw := range gateways {
-		routeToGw, err := c.RouteGet(gw)
-		if err != nil {
-			return fmt.Errorf("route lookup to %s failed: %w", gw, err)
-		}
 		nextHops = append(nextHops, rtnetlink.NextHop{
-			Hop: rtnetlink.RTNextHop{
-				Length:  16,
-				IfIndex: uint32(routeToGw.Interface.Index),
-			},
 			Gateway: gw,
 		})
 	}
-	_, allNets, _ := net.ParseCIDR("0.0.0.0/0")
-	dstlen, _ := allNets.Mask.Size()
 	routeMessage := &rtnetlink.RouteMessage{
-		Family:    familyAfInet,
-		Table:     rtTableMain,
-		Protocol:  protoBgp,
-		Type:      typeUnicast,
-		Scope:     scopeGlobal,
-		DstLength: uint8(dstlen),
-		SrcLength: uint8(0),
+		Family:   familyAfInet,
+		Table:    rtTableMain,
+		Protocol: protoBgp,
+		Type:     typeUnicast,
 		Attributes: rtnetlink.RouteAttributes{
-			Dst:       allNets.IP,
-			OutIface:  uint32(noInterfaceIndex),
 			Priority:  routePriority,
 			Multipath: nextHops,
 		},
 	}
-	return c.Conn.Route.Replace(routeMessage)
+	flags := netlink.Request | netlink.Create | netlink.Replace | netlink.Acknowledge
+	_, err = c.Execute(routeMessage, newRoute, flags)
+	return err
+}
+
+// DeleteDefaultRoute удаляет маршрут по-умолчанию.
+func DeleteDefaultRoute() error {
+	c, err := rtnetlink.Dial(nil)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	routeMessage := &rtnetlink.RouteMessage{
+		Family:   familyAfInet,
+		Table:    rtTableMain,
+		Protocol: protoBgp,
+		Type:     typeUnicast,
+		Attributes: rtnetlink.RouteAttributes{
+			Priority: routePriority,
+		},
+	}
+	flags := netlink.Request | netlink.Acknowledge
+	_, err = c.Execute(routeMessage, deleteRoute, flags)
+	return err
 }
