@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"time"
+	"syscall"
 
 	api "github.com/osrg/gobgp/v3/api"
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
@@ -53,18 +53,9 @@ func (sp *Speaker) loadConfig() error {
 }
 
 func (sp *Speaker) Run() error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	sp.ctx = ctx
-	defer cancel()
-	go func() {
-		c := make(chan os.Signal, 1)
-		signal.Notify(c, os.Interrupt)
-		select {
-		case <-c:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
+	defer stop()
 
 	sp.s = server.NewBgpServer(server.GrpcListenAddress("localhost:6061"), server.LoggerOption(sp.logger))
 	go sp.s.Serve()
@@ -92,9 +83,7 @@ func (sp *Speaker) Run() error {
 }
 
 func (sp *Speaker) startBgp() error {
-	ctx, cancel := context.WithTimeout(sp.ctx, time.Second)
-	defer cancel()
-	return sp.s.StartBgp(ctx, &api.StartBgpRequest{
+	return sp.s.StartBgp(sp.ctx, &api.StartBgpRequest{
 		Global: &api.Global{
 			Asn:        sp.config.ASN,
 			RouterId:   sp.config.AnycastIP,
@@ -104,9 +93,7 @@ func (sp *Speaker) startBgp() error {
 }
 
 func (sp *Speaker) stopBgp() error {
-	ctx, cancel := context.WithTimeout(sp.ctx, time.Second)
-	defer cancel()
-	return sp.s.StopBgp(ctx, &api.StopBgpRequest{})
+	return sp.s.StopBgp(sp.ctx, &api.StopBgpRequest{})
 }
 
 func (sp *Speaker) addNeighbors() error {
@@ -117,12 +104,8 @@ func (sp *Speaker) addNeighbors() error {
 				PeerAsn:         neighbor.ASN,
 			},
 		}
-		ctx, cancel := context.WithTimeout(sp.ctx, time.Second)
-		if err := func() error {
-			defer cancel()
-			return sp.s.AddPeer(ctx, &api.AddPeerRequest{Peer: peer})
-		}(); err != nil {
-			return fmt.Errorf("as %d peer %s error: %w", neighbor.ASN, neighbor.Address, err)
+		if err := sp.s.AddPeer(sp.ctx, &api.AddPeerRequest{Peer: peer}); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -153,13 +136,8 @@ func (sp *Speaker) addPath() error {
 		Nlri:   nlri,
 		Pattrs: []*anypb.Any{a1, a2},
 	}
-	ctx, cancel := context.WithTimeout(sp.ctx, time.Second)
-	defer cancel()
-	_, err = sp.s.AddPath(ctx, &api.AddPathRequest{Path: path})
-	if err != nil {
-		return fmt.Errorf("error adding advertisement: %w", err)
-	}
-	return nil
+	_, err = sp.s.AddPath(sp.ctx, &api.AddPathRequest{Path: path})
+	return err
 }
 
 // Метод setupPolicies [настраивает политики], чтобы случайно не принять или не отправить ненужное.
@@ -325,27 +303,21 @@ func (sp *Speaker) createAnycastIPPolicyImport() *api.Policy {
 }
 
 func (sp *Speaker) addDefinedSet(s *api.DefinedSet) error {
-	ctx, cancel := context.WithTimeout(sp.ctx, time.Second)
-	defer cancel()
-	if err := sp.s.AddDefinedSet(ctx, &api.AddDefinedSetRequest{DefinedSet: s}); err != nil {
+	if err := sp.s.AddDefinedSet(sp.ctx, &api.AddDefinedSetRequest{DefinedSet: s}); err != nil {
 		return fmt.Errorf("error creating defined-set \"%s\": %w", s.Name, err)
 	}
 	return nil
 }
 
 func (sp *Speaker) addPolicyAssignment(a *api.PolicyAssignment) error {
-	ctx, cancel := context.WithTimeout(sp.ctx, time.Second)
-	defer cancel()
-	if err := sp.s.AddPolicyAssignment(ctx, &api.AddPolicyAssignmentRequest{Assignment: a}); err != nil {
+	if err := sp.s.AddPolicyAssignment(sp.ctx, &api.AddPolicyAssignmentRequest{Assignment: a}); err != nil {
 		return fmt.Errorf("error creating policy assignment \"%s\": %w", a.Name, err)
 	}
 	return nil
 }
 
 func (sp *Speaker) addPolicy(p *api.Policy) error {
-	ctx, cancel := context.WithTimeout(sp.ctx, time.Second)
-	defer cancel()
-	if err := sp.s.AddPolicy(ctx, &api.AddPolicyRequest{Policy: p, ReferExistingStatements: false}); err != nil {
+	if err := sp.s.AddPolicy(sp.ctx, &api.AddPolicyRequest{Policy: p, ReferExistingStatements: false}); err != nil {
 		return fmt.Errorf("failed to add policy \"%s\": %w", p.Name, err)
 	}
 	return nil
