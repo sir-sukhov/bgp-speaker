@@ -1,6 +1,7 @@
 ---
 anycast_ip: "10.100.10.100"
 asn: 65300
+health_check_url: http://172.16.204.101:9000/ready
 neighbors:
 - address: "192.168.84.100"
   local_address: "192.168.84.1"

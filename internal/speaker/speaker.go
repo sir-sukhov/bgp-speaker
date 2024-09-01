@@ -6,10 +6,12 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	api "github.com/osrg/gobgp/v3/api"
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
 	"github.com/osrg/gobgp/v3/pkg/server"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/types/known/anypb"
 	"gopkg.in/yaml.v3"
 )
@@ -24,7 +26,6 @@ const (
 )
 
 type Speaker struct {
-	ctx        context.Context
 	confitPath string
 	logLevel   LogLevel
 	logger     *Logger
@@ -54,36 +55,64 @@ func (sp *Speaker) loadConfig() error {
 
 func (sp *Speaker) Run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	sp.ctx = ctx
 	defer stop()
 
 	sp.s = server.NewBgpServer(server.GrpcListenAddress("localhost:6061"), server.LoggerOption(sp.logger))
 	go sp.s.Serve()
 	defer sp.s.Stop()
-	if err := sp.startBgp(); err != nil {
+
+	if err := sp.setup(ctx); err != nil {
+		return err
+	}
+
+	eg, ctx := errgroup.WithContext(ctx)
+
+	healthCheck, err := NewHealthCheck(
+		sp.addPath,
+		sp.deletePath,
+		sp.config.HealthCheckURL,
+	)
+	if err != nil {
+		return fmt.Errorf("error creating health check")
+	}
+	eg.Go(func() error {
+		return healthCheck.Run(ctx, *sp.logger)
+	})
+
+	err = eg.Wait()
+	if err != nil {
+		sp.logger.Error(fmt.Sprintf("some routines completed with error: %s", err.Error()), nil)
+	}
+	sp.logger.Info("shutting down bgp", nil)
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := sp.stopBgp(timeoutCtx); err != nil {
+		sp.logger.Error(fmt.Sprintf("failed to stop bgp server: %s", err.Error()), nil)
+	}
+
+	return err
+}
+
+func (sp *Speaker) setup(ctx context.Context) error {
+	if err := sp.startBgp(ctx); err != nil {
 		return fmt.Errorf("error starting bgp: %w", err)
 	}
-	if err := sp.setupPolicies(); err != nil {
+	if err := sp.setupPolicies(ctx); err != nil {
 		return fmt.Errorf("error creating policies: %w", err)
 	}
-	if err := sp.addNeighbors(); err != nil {
+	if err := sp.addNeighbors(ctx); err != nil {
 		return fmt.Errorf("error adding neighbors: %w", err)
 	}
-	if err := sp.addPath(); err != nil {
-		return fmt.Errorf("error advertising anycast route: %w", err)
+	if sp.config.HealthCheckURL == "" {
+		if err := sp.addPath(ctx); err != nil {
+			return fmt.Errorf("error advertising anycast route: %w", err)
+		}
 	}
-
-	<-ctx.Done()
-	sp.logger.logger.Info("context is done, shutting down bgp")
-	if err := sp.stopBgp(); err != nil {
-		return fmt.Errorf("failed to stop bgp server: %w", err)
-	}
-
 	return nil
 }
 
-func (sp *Speaker) startBgp() error {
-	return sp.s.StartBgp(sp.ctx, &api.StartBgpRequest{
+func (sp *Speaker) startBgp(ctx context.Context) error {
+	return sp.s.StartBgp(ctx, &api.StartBgpRequest{
 		Global: &api.Global{
 			Asn:        sp.config.ASN,
 			RouterId:   sp.config.AnycastIP,
@@ -92,11 +121,11 @@ func (sp *Speaker) startBgp() error {
 	})
 }
 
-func (sp *Speaker) stopBgp() error {
-	return sp.s.StopBgp(sp.ctx, &api.StopBgpRequest{})
+func (sp *Speaker) stopBgp(ctx context.Context) error {
+	return sp.s.StopBgp(ctx, &api.StopBgpRequest{})
 }
 
-func (sp *Speaker) addNeighbors() error {
+func (sp *Speaker) addNeighbors(ctx context.Context) error {
 	for _, neighbor := range sp.config.Neighbors {
 		peer := &api.Peer{
 			Conf: &api.PeerConf{
@@ -104,20 +133,20 @@ func (sp *Speaker) addNeighbors() error {
 				PeerAsn:         neighbor.ASN,
 			},
 		}
-		if err := sp.s.AddPeer(sp.ctx, &api.AddPeerRequest{Peer: peer}); err != nil {
+		if err := sp.s.AddPeer(ctx, &api.AddPeerRequest{Peer: peer}); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (sp *Speaker) addPath() error {
+func (sp *Speaker) anycastPath() (*api.Path, error) {
 	nlri, err := anypb.New(&api.IPAddressPrefix{
 		Prefix:    sp.config.AnycastIP,
 		PrefixLen: 32,
 	})
 	if err != nil {
-		return fmt.Errorf("error creating network layer reachability information: %s", err)
+		return nil, fmt.Errorf("error creating network layer reachability information: %s", err)
 	}
 	a1, _ := anypb.New(&api.OriginAttribute{
 		Origin: uint32(bgp.BGP_ORIGIN_ATTR_TYPE_IGP),
@@ -131,35 +160,50 @@ func (sp *Speaker) addPath() error {
 		//     https://github.com/osrg/gobgp/blob/dace87570846cc4b4f16e8b25516b22c43888f76/cmd/gobgp/global.go#L1658
 		NextHop: "0.0.0.0",
 	})
-	path := &api.Path{
+	return &api.Path{
 		Family: &api.Family{Afi: api.Family_AFI_IP, Safi: api.Family_SAFI_UNICAST},
 		Nlri:   nlri,
 		Pattrs: []*anypb.Any{a1, a2},
+	}, nil
+}
+
+func (sp *Speaker) addPath(ctx context.Context) error {
+	path, err := sp.anycastPath()
+	if err != nil {
+		return err
 	}
-	_, err = sp.s.AddPath(sp.ctx, &api.AddPathRequest{Path: path})
+	_, err = sp.s.AddPath(ctx, &api.AddPathRequest{Path: path})
 	return err
+}
+
+func (sp *Speaker) deletePath(ctx context.Context) error {
+	path, err := sp.anycastPath()
+	if err != nil {
+		return err
+	}
+	return sp.s.DeletePath(ctx, &api.DeletePathRequest{Path: path})
 }
 
 // Метод setupPolicies [настраивает политики], чтобы случайно не принять или не отправить ненужное.
 //
 // [настраивает политики]: https://github.com/osrg/gobgp/blob/master/docs/sources/policy.md
-func (sp *Speaker) setupPolicies() error {
-	if err := sp.addDefinedSets(); err != nil {
+func (sp *Speaker) setupPolicies(ctx context.Context) error {
+	if err := sp.addDefinedSets(ctx); err != nil {
 		return fmt.Errorf("addDefinedSets failed: %w", err)
 	}
 	policyDefaultRoute := sp.createDefaultRoutePolicy()
-	if err := sp.addPolicy(policyDefaultRoute); err != nil {
+	if err := sp.addPolicy(ctx, policyDefaultRoute); err != nil {
 		return err
 	}
 	policyAnycastIP := sp.createAnycastIPPolicy()
-	if err := sp.addPolicy(policyAnycastIP); err != nil {
+	if err := sp.addPolicy(ctx, policyAnycastIP); err != nil {
 		return err
 	}
 	policyImportAnycastIP := sp.createAnycastIPPolicyImport()
-	if err := sp.addPolicy(policyImportAnycastIP); err != nil {
+	if err := sp.addPolicy(ctx, policyImportAnycastIP); err != nil {
 		return err
 	}
-	if err := sp.addPolicyAssignment(&api.PolicyAssignment{
+	if err := sp.addPolicyAssignment(ctx, &api.PolicyAssignment{
 		Name:          global,
 		Direction:     api.PolicyDirection_IMPORT,
 		Policies:      []*api.Policy{policyDefaultRoute, policyImportAnycastIP},
@@ -167,7 +211,7 @@ func (sp *Speaker) setupPolicies() error {
 	}); err != nil {
 		return err
 	}
-	if err := sp.addPolicyAssignment(&api.PolicyAssignment{
+	if err := sp.addPolicyAssignment(ctx, &api.PolicyAssignment{
 		Name:          global,
 		Direction:     api.PolicyDirection_EXPORT,
 		Policies:      []*api.Policy{policyAnycastIP},
@@ -186,7 +230,7 @@ func (sp *Speaker) setupPolicies() error {
 // Имена объектов являются константами, на которые еще ссылаются политики.
 //
 // [defined-sets]: https://github.com/osrg/gobgp/blob/master/docs/sources/policy.md#1-defining-defined-sets
-func (sp *Speaker) addDefinedSets() error {
+func (sp *Speaker) addDefinedSets(ctx context.Context) error {
 	prefixSetDefaultRoute := &api.DefinedSet{
 		DefinedType: api.DefinedType_PREFIX,
 		Name:        defaultRoute,
@@ -198,7 +242,7 @@ func (sp *Speaker) addDefinedSets() error {
 			},
 		},
 	}
-	if err := sp.addDefinedSet(prefixSetDefaultRoute); err != nil {
+	if err := sp.addDefinedSet(ctx, prefixSetDefaultRoute); err != nil {
 		return err
 	}
 	prefixSetAnycastIP := &api.DefinedSet{
@@ -212,7 +256,7 @@ func (sp *Speaker) addDefinedSets() error {
 			},
 		},
 	}
-	if err := sp.addDefinedSet(prefixSetAnycastIP); err != nil {
+	if err := sp.addDefinedSet(ctx, prefixSetAnycastIP); err != nil {
 		return err
 	}
 	neighbors := []string{}
@@ -224,7 +268,7 @@ func (sp *Speaker) addDefinedSets() error {
 		Name:        uplinks,
 		List:        neighbors,
 	}
-	if err := sp.addDefinedSet(&neighborSet); err != nil {
+	if err := sp.addDefinedSet(ctx, &neighborSet); err != nil {
 		return err
 	}
 	return nil
@@ -302,22 +346,22 @@ func (sp *Speaker) createAnycastIPPolicyImport() *api.Policy {
 	}
 }
 
-func (sp *Speaker) addDefinedSet(s *api.DefinedSet) error {
-	if err := sp.s.AddDefinedSet(sp.ctx, &api.AddDefinedSetRequest{DefinedSet: s}); err != nil {
+func (sp *Speaker) addDefinedSet(ctx context.Context, s *api.DefinedSet) error {
+	if err := sp.s.AddDefinedSet(ctx, &api.AddDefinedSetRequest{DefinedSet: s}); err != nil {
 		return fmt.Errorf("error creating defined-set \"%s\": %w", s.Name, err)
 	}
 	return nil
 }
 
-func (sp *Speaker) addPolicyAssignment(a *api.PolicyAssignment) error {
-	if err := sp.s.AddPolicyAssignment(sp.ctx, &api.AddPolicyAssignmentRequest{Assignment: a}); err != nil {
+func (sp *Speaker) addPolicyAssignment(ctx context.Context, a *api.PolicyAssignment) error {
+	if err := sp.s.AddPolicyAssignment(ctx, &api.AddPolicyAssignmentRequest{Assignment: a}); err != nil {
 		return fmt.Errorf("error creating policy assignment \"%s\": %w", a.Name, err)
 	}
 	return nil
 }
 
-func (sp *Speaker) addPolicy(p *api.Policy) error {
-	if err := sp.s.AddPolicy(sp.ctx, &api.AddPolicyRequest{Policy: p, ReferExistingStatements: false}); err != nil {
+func (sp *Speaker) addPolicy(ctx context.Context, p *api.Policy) error {
+	if err := sp.s.AddPolicy(ctx, &api.AddPolicyRequest{Policy: p, ReferExistingStatements: false}); err != nil {
 		return fmt.Errorf("failed to add policy \"%s\": %w", p.Name, err)
 	}
 	return nil
