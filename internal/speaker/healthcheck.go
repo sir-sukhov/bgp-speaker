@@ -84,7 +84,7 @@ func (hc *HealthCheck) Run(ctx context.Context, logger Logger) error {
 				}
 				hc.status = Unhealthy
 				hc.okCounter = 0
-				logger.Warn("HealthCheck status changed", log.Fields{"status": hc.status, "okCount": hc.okCounter})
+				logger.Warn("HealthCheck failed, status changed", log.Fields{"status": hc.status, "okCount": hc.okCounter})
 				continue
 			}
 			if err == nil && hc.status == Unhealthy {
@@ -94,6 +94,7 @@ func (hc *HealthCheck) Run(ctx context.Context, logger Logger) error {
 						continue
 					}
 					hc.status = Healthy
+					logger.Info("HealthCheck succeeded, status changed", log.Fields{"status": hc.status, "okCount": hc.okCounter})
 					continue
 				}
 				hc.okCounter++

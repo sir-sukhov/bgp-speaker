@@ -7,14 +7,14 @@ import (
 )
 
 type Config struct {
-	AnycastIP      string `yaml:"anycast_ip"`
-	ASN            uint32 `yaml:"asn"`
-	HealthCheckURL string `yaml:"health_check_url"`
-	Neighbors      []struct {
-		Address      string `yaml:"address"`
-		LocalAddress string `yaml:"local_address"`
-		ASN          uint32 `yaml:"asn"`
+	AnycastIP string `yaml:"anycast_ip"`
+	ASN       uint32 `yaml:"asn"`
+	Neighbors []struct {
+		Address string `yaml:"address"`
+		ASN     uint32 `yaml:"asn"`
 	} `yaml:"neighbors"`
+	HealthCheckURL  string  `yaml:"health_check_url"`
+	UpdateFIBMetric *uint32 `yaml:"update_fib_metric"`
 }
 
 type LogLevel string

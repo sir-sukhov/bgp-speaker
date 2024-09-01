@@ -8,7 +8,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jsimonetti/rtnetlink"
 	api "github.com/osrg/gobgp/v3/api"
+	"github.com/osrg/gobgp/v3/pkg/log"
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
 	"github.com/osrg/gobgp/v3/pkg/server"
 	"golang.org/x/sync/errgroup"
@@ -23,14 +25,17 @@ const (
 	onlyAnycastIP      = "only-anycast-ip"
 	anycastIP          = "anycast-ip"
 	global             = "global"
+	zeroPrefix         = "0.0.0.0/0"
 )
 
 type Speaker struct {
-	confitPath string
-	logLevel   LogLevel
-	logger     *Logger
-	config     Config
-	s          *server.BgpServer
+	confitPath       string
+	logLevel         LogLevel
+	logger           *Logger
+	config           Config
+	s                *server.BgpServer
+	linuxRouteMetric uint32
+	conn             *rtnetlink.Conn
 }
 
 func NewAppCfg(configPath string, logLevel LogLevel) (*Speaker, error) {
@@ -78,6 +83,13 @@ func (sp *Speaker) Run() error {
 	eg.Go(func() error {
 		return healthCheck.Run(ctx, *sp.logger)
 	})
+
+	if sp.config.UpdateFIBMetric != nil {
+		sp.linuxRouteMetric = *sp.config.UpdateFIBMetric
+		eg.Go(func() error {
+			return sp.UpdateFIB(ctx)
+		})
+	}
 
 	err = eg.Wait()
 	if err != nil {
@@ -172,16 +184,18 @@ func (sp *Speaker) addPath(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	sp.logger.Info("addPath", log.Fields{"anycast_ip": sp.config.AnycastIP})
 	_, err = sp.s.AddPath(ctx, &api.AddPathRequest{Path: path})
 	return err
 }
 
 func (sp *Speaker) deletePath(ctx context.Context) error {
-	path, err := sp.anycastPath()
+	bgpPath, err := sp.anycastPath()
 	if err != nil {
 		return err
 	}
-	return sp.s.DeletePath(ctx, &api.DeletePathRequest{Path: path})
+	sp.logger.Warn("deletePath", log.Fields{"anycast_ip": sp.config.AnycastIP})
+	return sp.s.DeletePath(ctx, &api.DeletePathRequest{Path: bgpPath})
 }
 
 // Метод setupPolicies [настраивает политики], чтобы случайно не принять или не отправить ненужное.
@@ -236,7 +250,7 @@ func (sp *Speaker) addDefinedSets(ctx context.Context) error {
 		Name:        defaultRoute,
 		Prefixes: []*api.Prefix{
 			{
-				IpPrefix:      "0.0.0.0/0",
+				IpPrefix:      zeroPrefix,
 				MaskLengthMin: 0,
 				MaskLengthMax: 0,
 			},

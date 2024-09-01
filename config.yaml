@@ -1,11 +1,10 @@
 ---
 anycast_ip: "10.100.10.100"
-asn: 65300
-health_check_url: http://172.16.204.101:9000/ready
+asn: 65100
 neighbors:
-- address: "192.168.84.100"
-  local_address: "192.168.84.1"
-  asn: 4266459237
-- address: "192.168.161.100"
-  local_address: "192.168.161.1"
-  asn: 4266459238
+- address: "10.0.1.254"
+  asn: 65101
+- address: "10.0.2.254"
+  asn: 65102
+health_check_url: http://172.16.204.101:9000/ready
+update_fib_metric: 70

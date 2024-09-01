@@ -3,9 +3,12 @@ module github.com/sir-sukhov/bgp-speaker
 go 1.22.1
 
 require (
+	github.com/mdlayher/netlink v1.7.2
 	github.com/osrg/gobgp/v3 v3.27.0
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.8.1
+	golang.org/x/exp v0.0.0-20240823005443-9b4947da3948
+	golang.org/x/sync v0.8.0
 	google.golang.org/protobuf v1.34.1
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -13,11 +16,8 @@ require (
 require (
 	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/josharian/native v1.1.0 // indirect
-	github.com/mdlayher/netlink v1.7.2 // indirect
 	github.com/mdlayher/socket v0.4.1 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
-	golang.org/x/exp v0.0.0-20240604190554-fc45aab8b7f8 // indirect
-	golang.org/x/sync v0.7.0 // indirect
 )
 
 require (
